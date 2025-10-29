@@ -1,80 +1,73 @@
 // api/random.js
-// Vercel serverless function: returns a JSON { url: "<image-url>" }
-// Picks a random image from the given Unsplash username (tabliss-official).
-//
-// Requirements:
-// - Set the environment variable UNSPLASH_ACCESS_KEY in Vercel to your Unsplash access key.
-// - Deploy to Vercel; the frontend will fetch `${VERCEL_BACKEND_URL}/api/random`.
+// Vercel serverless function that returns a single random image URL
+// from the Unsplash user 'tabliss-official'.
+// Requires UNSPLASH_ACCESS_KEY in environment variables.
 
 export default async function handler(req, res) {
-  // Replace this username if the account name is different
   const USERNAME = 'tabliss-official';
-
   const ACCESS_KEY = process.env.UNSPLASH_ACCESS_KEY;
+
   if (!ACCESS_KEY) {
-    return res.status(500).json({ error: 'Missing UNSPLASH_ACCESS_KEY environment variable' });
+    res.setHeader('Content-Type', 'application/json');
+    return res.status(500).json({ error: 'Missing UNSPLASH_ACCESS_KEY env var' });
   }
 
-  const perPage = 30; // number of photos to fetch from user (max 30 per Unsplash docs)
-  const apiUrl = `https://api.unsplash.com/users/${encodeURIComponent(USERNAME)}/photos?per_page=${perPage}`;
+  // Build Unsplash random-photo URL, limiting to the user and landscape orientation.
+  // You can remove orientation or change it if you want.
+  const unsplashUrl = `https://api.unsplash.com/photos/random?username=${encodeURIComponent(USERNAME)}&orientation=landscape`;
 
   try {
-    const response = await fetch(apiUrl, {
+    const apiResp = await fetch(unsplashUrl, {
       headers: {
-        // Unsplash uses "Authorization: Client-ID <access_key>" or client_id query param.
         'Authorization': `Client-ID ${ACCESS_KEY}`,
         'Accept-Version': 'v1'
-      },
-      // don't use caching here; allow Vercel/caller to control caching via response headers
+      }
     });
 
-    if (!response.ok) {
-      const text = await response.text().catch(() => '');
-      console.error('Unsplash API error:', response.status, text);
-      return res.status(502).json({ error: 'Unsplash API error', status: response.status });
+    if (!apiResp.ok) {
+      const bodyText = await apiResp.text().catch(() => '');
+      console.error('Unsplash API returned non-OK:', apiResp.status, bodyText);
+      // Pass some useful info to caller (but don't leak secrets)
+      res.setHeader('Content-Type', 'application/json');
+      return res.status(502).json({ error: 'Unsplash API error', status: apiResp.status });
     }
 
-    const photos = await response.json();
+    const photo = await apiResp.json();
 
-    if (!Array.isArray(photos) || photos.length === 0) {
-      return res.status(404).json({ error: 'No photos found for user' });
+    // Pick a usable URL (regular preferred, fallback to full/raw)
+    const maybeUrl = (photo && photo.urls && (photo.urls.regular || photo.urls.full || photo.urls.raw)) || null;
+    if (!maybeUrl) {
+      res.setHeader('Content-Type', 'application/json');
+      return res.status(502).json({ error: 'No usable image URL from Unsplash' });
     }
 
-    // pick random index
-    const idx = Math.floor(Math.random() * photos.length);
-    const photo = photos[idx];
+    // Optionally add resizing params (Unsplash uses imgix query params)
+    const width = 1920;
+    const params = `w=${width}&fit=crop`;
+    const finalUrl = maybeUrl.includes('?') ? `${maybeUrl}&${params}` : `${maybeUrl}?${params}`;
 
-    // Use a useful size — regular or full. 'regular' is appropriate for background.
-    // Optionally append imgix params: ?w=1920&fit=crop — Unsplash images use imgix.
-    const rawUrl = (photo && photo.urls && (photo.urls.regular || photo.urls.full || photo.urls.raw)) || null;
-
-    if (!rawUrl) {
-      return res.status(502).json({ error: 'No usable image URL returned by Unsplash' });
-    }
-
-    // Prepare the final URL (you can append width/fit params if you want)
-    // If rawUrl already contains query params, append with & otherwise use ?
-    const preferredUrl = (() => {
-      const width = 1920;
-      const params = `w=${width}&fit=crop`;
-      return rawUrl.includes('?') ? `${rawUrl}&${params}` : `${rawUrl}?${params}`;
-    })();
-
-    // Set CORS so the browser can fetch this endpoint
-    // Adjust Access-Control-Allow-Origin to restrict to your site in production
+    // CORS: allow your frontend to fetch this. In production, replace '*' with your origin.
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
     res.setHeader('Content-Type', 'application/json');
 
-    // Cache this response at the CDN edge for a short time (e.g., 1 hour)
-    // but you can tune this. Stale-while-revalidate could be added if desired.
+    // Cache at Vercel edge for a short time to save API calls (adjust to taste).
+    // s-maxage controls CDN (edge) caching. stale-while-revalidate gives graceful revalidation.
     res.setHeader('Cache-Control', 's-maxage=3600, stale-while-revalidate=86400');
 
-    return res.status(200).json({ url: preferredUrl, raw: rawUrl, source: 'unsplash', username: USERNAME });
+    // Return a compact payload. You can expand with photo.user, id, alt_description, etc.
+    return res.status(200).json({
+      url: finalUrl,
+      id: photo.id,
+      raw: photo.urls.raw || null,
+      alt_description: photo.alt_description || null,
+      username: photo.user && photo.user.username ? photo.user.username : USERNAME,
+    });
 
   } catch (err) {
     console.error('Error in /api/random:', err && (err.stack || err.message || err));
     res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Content-Type', 'application/json');
     return res.status(500).json({ error: 'Internal server error' });
   }
 }
