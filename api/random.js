@@ -58,7 +58,6 @@ export default async function handler(req, res) {
       res.setHeader('Content-Type', 'application/json');
       return res.status(502).json({ error: 'Unsplash API error', status: apiResp.status, detail: body });
     }
-
     const photo = JSON.parse(text);
 
     const maybeUrl = (photo && photo.urls && (photo.urls.regular || photo.urls.full || photo.urls.raw)) || null;
